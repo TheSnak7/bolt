@@ -4,6 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const zig_aio = b.dependency("zig-aio", .{});
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -14,6 +16,10 @@ pub fn build(b: *std.Build) void {
         .name = "bolt",
         .root_module = exe_mod,
     });
+
+    exe.root_module.addImport("aio", zig_aio.module("aio"));
+    exe.root_module.addImport("coro", zig_aio.module("coro"));
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
