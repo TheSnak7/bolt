@@ -2,6 +2,8 @@ const std = @import("std");
 const coro = @import("coro");
 const aio = @import("aio");
 
+const TcpListener = @import("TcpListener.zig");
+
 // TODO: Make a library for better logging/ tracing
 pub const std_options: std.Options = .{
     .log_level = .err,
@@ -10,6 +12,7 @@ pub const std_options: std.Options = .{
 fn echo(socket: std.posix.socket_t) !void {
     std.log.debug("Opened connection", .{});
     defer std.log.debug("Closed connection", .{});
+    // TODO: change buffer strategy
     var buf: [1024]u8 = undefined;
 
     while (true) {
@@ -29,30 +32,16 @@ fn echo(socket: std.posix.socket_t) !void {
     try coro.io.single(.close_socket, .{ .socket = socket });
 }
 
-fn server(startup: *coro.ResetEvent, scheduler: *coro.Scheduler) !void {
+fn server(scheduler: *coro.Scheduler) !void {
     std.log.debug("Starting server\n", .{});
 
-    var listener: std.posix.socket_t = undefined;
-    try coro.io.single(.socket, .{
-        .domain = std.posix.AF.INET,
-        .flags = std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC,
-        .protocol = std.posix.IPPROTO.TCP,
-        .out_socket = &listener,
-    });
-    defer coro.io.single(.close_socket, .{ .socket = listener }) catch {};
-
-    try std.posix.setsockopt(listener, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-
     const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 3000);
-    try std.posix.bind(listener, &address.any, address.getOsSockLen());
-    try std.posix.listen(listener, 128);
 
-    startup.set();
+    var listener = try TcpListener.bind(&address);
+    defer listener.deinit();
 
     while (true) {
-        var client_sock: std.posix.socket_t = undefined;
-        try coro.io.single(.accept, .{ .socket = listener, .out_socket = &client_sock });
-
+        const client_sock = try listener.accept();
         _ = try scheduler.spawn(echo, .{client_sock}, .{});
     }
 }
@@ -64,9 +53,7 @@ pub fn main() !void {
     var scheduler = try coro.Scheduler.init(gpa.allocator(), .{});
     defer scheduler.deinit();
 
-    var startup: coro.ResetEvent = .{};
-
-    _ = try scheduler.spawn(server, .{ &startup, &scheduler }, .{});
+    _ = try scheduler.spawn(server, .{&scheduler}, .{});
 
     try scheduler.run(.wait);
 }
