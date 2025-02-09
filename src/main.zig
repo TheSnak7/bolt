@@ -1,12 +1,12 @@
 const std = @import("std");
-const coro = @import("coro");
 const aio = @import("aio");
+const coro = @import("coro");
 
 const TcpListener = @import("TcpListener.zig");
 
 // TODO: Make a library for better logging/ tracing
 pub const std_options: std.Options = .{
-    .log_level = .err,
+    .log_level = .debug,
 };
 
 fn echo(socket: std.posix.socket_t) !void {

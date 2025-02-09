@@ -14,9 +14,30 @@ pub fn bind(address: *const std.net.Address) !Self {
         .protocol = std.posix.IPPROTO.TCP,
         .out_socket = &listener,
     });
-    try std.posix.setsockopt(listener, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-    try std.posix.bind(listener, &address.any, address.getOsSockLen());
-    try std.posix.listen(listener, 128);
+    errdefer coro.io.single(.close_socket, .{ .socket = listener }) catch {};
+
+    std.posix.setsockopt(listener, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1))) catch |err| {
+        std.log.err("Could not set socket options: {s}", .{@errorName(err)});
+    };
+
+    std.posix.bind(listener, &address.any, address.getOsSockLen()) catch |err| {
+        switch (err) {
+            error.AddressInUse => {
+                std.log.err("Failed to bind: Address already in use (port {})", .{address.getPort()});
+                return error.AddressAlreadyInUse;
+            },
+            else => |e| {
+                std.log.err("Failed to bind: {s}", .{@errorName(err)});
+                return e;
+            },
+        }
+    };
+
+    std.posix.listen(listener, 128) catch |err| {
+        std.log.err("Failed to listen: {s}", .{@errorName(err)});
+    };
+    std.log.info("Listening on {}", .{address});
+
     return .{
         .listener = listener,
     };
