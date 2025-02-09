@@ -3,7 +3,12 @@
 
     .version = "0.0.0",
 
-    .dependencies = .{},
+    .dependencies = .{
+        .@"zig-aio" = .{
+            .url = "git+https://github.com/Cloudef/zig-aio.git#5ba6d24d1820f17e30fe35fb2c47806ce912db62",
+            .hash = "1220040a431288d7eadd7a910ba9fed59c957b46a6b552b0a664afb2b5cbf16a15a3",
+        },
+    },
 
     .paths = .{
         "build.zig",
