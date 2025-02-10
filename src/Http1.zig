@@ -68,8 +68,6 @@ fn run(btx: Btx, sock: std.posix.socket_t, services: []const Service) !void {
             continue :connection;
         };
 
-        std.log.debug("Method: {s}", .{@tagName(method)});
-
         const path = first_line_it.next() orelse {
             std.log.err("No Path in: {s}", .{buf[0..len]});
             continue :connection;

@@ -38,6 +38,22 @@ pub fn build(b: *std.Build) void {
         example_step.dependOn(&hello_world.step);
     }
 
+    {
+        const echo = b.addExecutable(.{
+            .name = "echo",
+            .root_source_file = b.path("examples/echo.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        echo.root_module.addImport("bolt", bolt_mod);
+        echo.root_module.addImport("aio", zig_aio.module("aio"));
+        echo.root_module.addImport("coro", zig_aio.module("coro"));
+        examples.put("echo", echo) catch @panic("OOM");
+
+        // Add all examples to the build step
+        example_step.dependOn(&echo.step);
+    }
+
     // Handle running examples if args are provided
     if (b.args) |args| {
         if (args.len > 0) {

@@ -12,7 +12,7 @@ pub fn hello(btx: Btx, req: Request) !Response {
 }
 
 pub fn helloMain(btx: Btx) !void {
-    std.log.debug("Starting server\n", .{});
+    std.log.info("Starting server\n", .{});
     const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 3000);
 
     var listener = try TcpListener.bind(&address);
