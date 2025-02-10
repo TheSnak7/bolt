@@ -2,16 +2,31 @@
 
 Bolt is an http server on top of zig-aio.
 
+## Goals
+
+I'm building Bolt to really grok zig-aio and web servers.
+Hyper is a huge inspiration for implementation and API design.
+Once we've got HTTP sorted, I'm planning to add gRPC support,
+which is kinda crucial for my Pegasus project.
+
 ## Usage
 
-Add Bolt as a dependency in your `build.zig.zon` through zig fetch.
+Add Bolt as a dependency in your `build.zig.zon` through zig fetch:
+
+```bash
+zig fetch --save git+https://github.com/TheSnak7/bolt#bdadc5c
+```
+
 Then in your `build.zig`, add it as a module:
 
 ```zig
-const bolt_dep = b.dependency("bolt", .{});
+const bolt_dep = b.dependency("bolt", .{
+    .target = target,
+    .optimize = optimize,
+});
 const bolt = bolt_dep.module("bolt");
 // Add to your executable
-exe.addModule("bolt", bolt);
+exe.root_module.addImport("bolt", bolt);
 ```
 
 ## Examples
