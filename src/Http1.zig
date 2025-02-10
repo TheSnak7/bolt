@@ -2,37 +2,45 @@ const std = @import("std");
 const coro = @import("coro");
 const aio = @import("aio");
 
-const AnyService = @import("service.zig").AnyService;
-const BoltContext = @import("BoltContext.zig");
+const Service = @import("service.zig").Service;
+const Btx = @import("BoltContext.zig");
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const lib = @import("lib.zig");
 
 const Self = @This();
 
-services: []const AnyService,
-
-const Options = struct {
-    services: []const AnyService,
+const Context = struct {
+    services: []const Service,
 };
 
+ctx: Context,
+
+const Options = struct {
+    services: []const Service,
+};
+
+// Create closure
 // Does not transfer ownership over services
 pub fn init(options: Options) !Self {
     return .{
-        .services = options.services,
+        .ctx = .{
+            .services = options.services,
+        },
     };
 }
 
 pub fn deinit(self: *Self) void {
-    _ = self;
     std.log.debug("Deinit Http1", .{});
+    const alloc = self.ctx.alloc;
+    alloc.destroy(self.ctx);
 }
 
-pub fn run(http: *Self, ctx: BoltContext, sock: std.posix.socket_t) !void {
+fn run(btx: Btx, sock: std.posix.socket_t, services: []const Service) !void {
     std.log.debug("Opened connection", .{});
     defer std.log.debug("Closed connection", .{});
 
-    var arena = std.heap.ArenaAllocator.init(ctx.allocator);
+    var arena = std.heap.ArenaAllocator.init(btx.allocator);
     defer arena.deinit();
 
     connection: while (true) {
@@ -97,10 +105,10 @@ pub fn run(http: *Self, ctx: BoltContext, sock: std.posix.socket_t) !void {
 
         std.log.info("request received: (method={s}, uri={s})", .{ @tagName(request.method), request.path() });
 
-        std.debug.assert(http.services.len == 1);
-        const service = http.services[0];
+        std.debug.assert(services.len == 1);
+        const service = services[0];
 
-        const service_context = BoltContext.with(arena_alloc, ctx.scheduler);
+        const service_context = Btx.with(arena_alloc, btx.scheduler);
         var response = try service.call(service_context, request);
 
         // Set response connection header based on request preference
@@ -135,9 +143,16 @@ pub fn run(http: *Self, ctx: BoltContext, sock: std.posix.socket_t) !void {
     }
 
     try coro.io.single(.close_socket, .{ .socket = sock });
-    defer http.deinit();
 }
 
-pub fn spawn(self: *Self, ctx: BoltContext, sock: std.posix.socket_t) !void {
-    _ = try ctx.scheduler.spawn(run, .{ self, ctx, sock }, .{});
+pub fn call(
+    ctx: Context,
+    btx: Btx,
+    sock: std.posix.socket_t,
+) !void {
+    try run(
+        btx,
+        sock,
+        ctx.services,
+    );
 }

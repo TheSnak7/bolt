@@ -2,12 +2,12 @@ const std = @import("std");
 const aio = @import("aio");
 const coro = @import("coro");
 
-const TcpListener = @import("TcpListener.zig");
-const Http1 = @import("Http1.zig");
-const Request = @import("request.zig").Request;
-const Response = @import("response.zig").Response;
-const BoltContext = @import("BoltContext.zig");
-const service = @import("service.zig");
+pub const TcpListener = @import("TcpListener.zig");
+pub const Http1 = @import("Http1.zig");
+pub const Request = @import("request.zig").Request;
+pub const Response = @import("response.zig").Response;
+pub const BoltContext = @import("BoltContext.zig");
+pub const service = @import("service.zig");
 const lib = @import("lib.zig");
 
 // TODO: Make a library for better logging/ tracing
@@ -54,7 +54,7 @@ fn server(ctx: BoltContext) !void {
     }
 }
 
-pub fn main() !void {
+pub fn main(run: anytype) !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
     defer _ = gpa.deinit();
 
@@ -63,7 +63,7 @@ pub fn main() !void {
 
     const context = BoltContext.with(gpa.allocator(), &scheduler);
 
-    _ = try scheduler.spawn(server, .{context}, .{});
+    _ = try scheduler.spawn(run, .{context}, .{});
 
     try scheduler.run(.wait);
 }
