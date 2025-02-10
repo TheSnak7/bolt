@@ -8,15 +8,30 @@ const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const BoltContext = @import("BoltContext.zig");
 const service = @import("service.zig");
+const lib = @import("lib.zig");
 
 // TODO: Make a library for better logging/ tracing
 pub const std_options: std.Options = .{
-    .log_level = .debug,
+    .log_level = .info,
 };
 
 fn echo(ctx: BoltContext, req: Request) !Response {
-    std.log.info("Request was: {s}", .{req.body});
-    return try Response.fromBytes(ctx.allocator, req.body);
+    return switch (lib.match(req.method, req.path())) {
+        lib.match(.GET, "/") => try Response.full(
+            ctx.allocator,
+            "Try POSTing data to /echo\n",
+        ),
+        lib.match(.POST, "/echo") => try Response.full(
+            ctx.allocator,
+            req.body,
+        ),
+        else => blk: {
+            std.log.err("Illegal path: {any}", .{req.path()});
+            var res = try Response.full(ctx.allocator, "404 Not Found\n");
+            res.status = .NotFound;
+            break :blk res;
+        },
+    };
 }
 
 fn server(ctx: BoltContext) !void {
