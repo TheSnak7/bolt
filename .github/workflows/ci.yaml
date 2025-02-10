@@ -30,3 +30,7 @@ jobs:
       # Check formatting.
       - name: Check Code Formatting
         run: zig fmt --check src
+
+      # Build the examples.
+      - name: Build Examples
+        run: zig build example

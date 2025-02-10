@@ -15,6 +15,7 @@ pub const Response = struct {
             .body = buf,
             .allocator = alloc,
             .headers = .empty,
+            .status = 200,
         };
     }
 

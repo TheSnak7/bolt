@@ -90,6 +90,6 @@ pub const Matcher = packed struct(u128) {
     }
 };
 
-pub fn match(method: Method, uri: []const u8) u128 {
+pub fn bmatch(method: Method, uri: []const u8) u128 {
     return Matcher.case(method, uri).val;
 }

@@ -4,7 +4,8 @@ const Request = @import("request.zig").Request;
 
 const std = @import("std");
 
-pub const AnyService = struct {
+// TODO: study coro and aio api better -> are Tasks applicable?
+pub const Service = struct {
     pub const VTable = struct {
         call: *const fn (ptr: *anyopaque, ctx: BoltContext, req: Request) anyerror!Response,
         deinit: *const fn (ptr: *anyopaque) void,
@@ -13,11 +14,11 @@ pub const AnyService = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
-    pub inline fn call(self: AnyService, ctx: BoltContext, req: Request) anyerror!Response {
+    pub inline fn call(self: Service, ctx: BoltContext, req: Request) anyerror!Response {
         return try self.vtable.call(self.ptr, ctx, req);
     }
 
-    pub inline fn deinit(self: AnyService) void {
+    pub inline fn deinit(self: Service) void {
         return self.vtable.deinit(self.ptr);
     }
 };
@@ -37,12 +38,12 @@ pub fn ServiceFn(func: anytype) type {
         // Empty because function services have no state
         pub fn deinit(_: *anyopaque) void {}
 
-        pub const ServiceVTable: AnyService.VTable = .{
+        pub const ServiceVTable: Service.VTable = .{
             .call = &call,
             .deinit = &deinit,
         };
 
-        pub fn service(self: *Self) AnyService {
+        pub fn service(self: *Self) Service {
             return .{
                 .ptr = @ptrCast(@alignCast(self)),
                 .vtable = &ServiceVTable,
@@ -52,7 +53,7 @@ pub fn ServiceFn(func: anytype) type {
     return FuncService;
 }
 
-pub fn createService(allocator: std.mem.Allocator, serv: anytype) !AnyService {
+pub fn createService(allocator: std.mem.Allocator, serv: anytype) !Service {
     _ = allocator; // Unused for now need for stateful services
     const info = @typeInfo(@TypeOf(serv));
 
@@ -62,7 +63,7 @@ pub fn createService(allocator: std.mem.Allocator, serv: anytype) !AnyService {
     };
 }
 
-pub fn createFnService(func: anytype) !AnyService {
+pub fn createFnService(func: anytype) !Service {
     const Container = ServiceFn(func);
 
     // Create static instance - one per unique function
