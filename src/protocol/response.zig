@@ -1,5 +1,5 @@
 const std = @import("std");
-const lib = @import("lib.zig");
+const lib = @import("../lib.zig");
 
 pub const Response = struct {
     allocator: std.mem.Allocator,

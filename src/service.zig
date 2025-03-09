@@ -1,6 +1,6 @@
-const Response = @import("response.zig").Response;
+const Response = @import("protocol.zig").Response;
 const BoltContext = @import("BoltContext.zig");
-const Request = @import("request.zig").Request;
+const Request = @import("protocol.zig").Request;
 
 const std = @import("std");
 

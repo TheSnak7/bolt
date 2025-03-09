@@ -32,15 +32,14 @@ fn echoMain(btx: Btx) !void {
     var listener = try bolt.TcpListener.bind(&address);
     defer listener.deinit();
 
+    const echo_service = try bolt.service.createFnService(echo);
+    const http = try bolt.Http1.init(.{});
+
     while (true) {
-        const client_sock = try listener.accept();
+        const stream = try listener.accept();
+        errdefer stream.deinit();
 
-        const echo_service = try bolt.service.createFnService(echo);
-
-        const http = try bolt.Http1.init(.{ .services = &.{
-            echo_service,
-        } });
-        _ = try btx.scheduler.spawn(bolt.Http1.call, .{ http.ctx, btx, client_sock }, .{});
+        _ = try btx.scheduler.spawn(bolt.Http1.call, .{ http, btx, stream, echo_service }, .{ .detached = true });
     }
 }
 

@@ -18,16 +18,14 @@ pub fn helloMain(btx: Btx) !void {
     var listener = try TcpListener.bind(&address);
     defer listener.deinit();
 
+    const hello_service = try bolt.service.createFnService(hello);
+    const http = try Http1.init(.{});
+
     while (true) {
-        const client_sock = try listener.accept();
+        const stream = try listener.accept();
+        errdefer stream.deinit();
 
-        const hello_service = try bolt.service.createFnService(hello);
-
-        const http = try Http1.init(
-            .{ .services = &.{hello_service} },
-        );
-
-        _ = try btx.scheduler.spawn(Http1.call, .{ http.ctx, btx, client_sock }, .{});
+        _ = try btx.scheduler.spawn(Http1.call, .{ http, btx, stream, hello_service }, .{ .detached = true });
     }
 }
 

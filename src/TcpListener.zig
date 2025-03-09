@@ -1,6 +1,7 @@
 const std = @import("std");
 const aio = @import("aio");
 const coro = @import("coro");
+const TcpStream = @import("stream.zig").TcpStream;
 
 const Self = @This();
 
@@ -43,10 +44,10 @@ pub fn bind(address: *const std.net.Address) !Self {
     };
 }
 
-pub fn accept(self: *Self) !std.posix.socket_t {
+pub fn accept(self: *Self) !TcpStream {
     var client_sock: std.posix.socket_t = undefined;
     try coro.io.single(.accept, .{ .socket = self.listener, .out_socket = &client_sock });
-    return client_sock;
+    return TcpStream.init(client_sock);
 }
 
 pub fn deinit(self: *Self) void {
