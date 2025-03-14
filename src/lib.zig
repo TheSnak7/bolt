@@ -1,6 +1,33 @@
 const std = @import("std");
 
-pub const HeaderMap = std.StringHashMapUnmanaged([]const u8);
+pub const HeaderMap = std.HashMapUnmanaged([]const u8, []const u8, HeaderContext, std.hash_map.default_max_load_percentage);
+
+const HeaderContext = struct {
+    pub fn hash(_: HeaderContext, name: []const u8) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        for (name) |c| {
+            const lower = std.ascii.toLower(c);
+            hasher.update(std.mem.asBytes(&lower));
+        }
+        return hasher.final();
+    }
+
+    pub fn eql(_: HeaderContext, a: []const u8, b: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+};
+
+pub const Version = enum {
+    http10,
+    http11,
+
+    pub fn string(version: Version) []const u8 {
+        return switch (version) {
+            .http10 => "HTTP/1.0",
+            .http11 => "HTTP/1.1",
+        };
+    }
+};
 
 // More convenient type than std.http.Method
 pub const Method = enum(u8) {
@@ -26,7 +53,7 @@ pub const Method = enum(u8) {
     pub fn parse(str: []const u8) !Method {
         const encoded = encode(str);
 
-        return switch (encoded) {
+        const method: Method = switch (encoded) {
             encode("GET") => .GET,
             encode("HEAD") => .HEAD,
             encode("POST") => .POST,
@@ -38,6 +65,8 @@ pub const Method = enum(u8) {
             encode("PATCH") => .PATCH,
             else => return error.InvalidMethod,
         };
+        if (!std.mem.eql(u8, str, @tagName(method))) return error.InvalidMethod;
+        return method;
     }
 };
 
@@ -65,14 +94,22 @@ pub const StatusCode = enum(u16) {
     OK = 200,
     BadRequest = 400,
     NotFound = 404,
+    UriTooLong = 414,
+    RequestHeaderFieldsTooLarge = 431,
     InternalServerError = 500,
+    NotImplemented = 501,
+    HttpVersionNotSupported = 505,
 
     pub fn string(s: StatusCode) []const u8 {
         return switch (s) {
             .OK => "OK",
             .BadRequest => "Bad Request",
             .NotFound => "Not Found",
+            .UriTooLong => "URI Too Long",
+            .RequestHeaderFieldsTooLarge => "Request Header Fields Too Large",
             .InternalServerError => "Internal Server Error",
+            .NotImplemented => "Not Implemented",
+            .HttpVersionNotSupported => "HTTP Version Not Supported",
         };
     }
 };

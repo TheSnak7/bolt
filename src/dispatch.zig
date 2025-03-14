@@ -2,6 +2,8 @@ const std = @import("std");
 const Connection = @import("Connection.zig");
 const Service = @import("service.zig").Service;
 const Btx = @import("BoltContext.zig");
+const lib = @import("lib.zig");
+const Response = @import("protocol.zig").Response;
 
 pub const DispatchServer = struct {
     connection: Connection,
@@ -29,7 +31,22 @@ pub const DispatchServer = struct {
         while (true) {
             _ = arena.reset(.retain_capacity);
             const alloc = arena.allocator();
-            const request = try self.connection.read(alloc) orelse break;
+            const request = self.connection.read(alloc) catch |err| {
+                const status: lib.StatusCode = switch (err) {
+                    error.InvalidRequest, error.IncompleteRequest => .BadRequest,
+                    error.RequestLineTooLong => .UriTooLong,
+                    error.HeadersTooLarge, error.TooManyHeaders => .RequestHeaderFieldsTooLarge,
+                    error.UnsupportedMethod => .NotImplemented,
+                    error.UnsupportedVersion => .HttpVersionNotSupported,
+                    else => return err,
+                };
+                var response = try Response.full(alloc, status.string());
+                defer response.deinit();
+                response.status = status;
+                try response.headers.put(alloc, "Connection", "close");
+                try self.connection.write(alloc, response);
+                break;
+            } orelse break;
 
             std.log.info("request received: (method={s}, uri={s})", .{ @tagName(request.method), request.path() });
 

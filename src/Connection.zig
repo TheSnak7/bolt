@@ -9,6 +9,7 @@ const State = struct {
     keep_alive: bool = true,
     reading: Reading = .Init,
     writing: Writing = .Init,
+    version: lib.Version = .http11,
 
     const Reading = enum {
         Init,
@@ -24,12 +25,18 @@ const State = struct {
 };
 
 stream: AnyStream,
+allocator: std.mem.Allocator,
+read_buf: std.ArrayListUnmanaged(u8) = .empty,
+read_pos: usize = 0,
+max_header_size: usize = 16 * 1024,
+max_request_line_size: usize = 8192,
+max_headers: usize = 100,
 state: State = .{},
 closed: bool = false,
 
 // The stream storage must outlive the connection. deinit closes the stream.
-pub fn init(stream: AnyStream) !Connection {
-    return .{ .stream = stream };
+pub fn init(allocator: std.mem.Allocator, stream: AnyStream) !Connection {
+    return .{ .allocator = allocator, .stream = stream };
 }
 
 pub fn deinit(self: *Connection) void {
@@ -37,6 +44,7 @@ pub fn deinit(self: *Connection) void {
     self.closed = true;
     self.state.reading = .Closed;
     self.state.writing = .Closed;
+    self.read_buf.deinit(self.allocator);
     self.stream.deinit();
 }
 
@@ -45,38 +53,56 @@ pub fn read(self: *Connection, alloc: std.mem.Allocator) !?proto.Request {
     self.state.reading = .Init;
     errdefer self.state.reading = .Closed;
 
-    const buf = try alloc.alloc(u8, 4096);
-    const len = try self.stream.read(buf);
-
-    if (len == 0) {
-        self.state.reading = .Closed;
-        return null;
+    if (self.read_pos > 0) {
+        const remaining = self.read_buf.items[self.read_pos..];
+        std.mem.copyForwards(u8, self.read_buf.items[0..remaining.len], remaining);
+        self.read_buf.items.len = remaining.len;
+        self.read_pos = 0;
     }
 
-    var first_line_it = std.mem.splitScalar(u8, buf[0..@min(len, 10)], ' ');
-    const method_str = first_line_it.next() orelse return error.InvalidRequest;
-    const method = try lib.Method.parse(method_str);
-    const path = first_line_it.next() orelse return error.InvalidRequest;
-    const uri = try std.Uri.parseAfterScheme("", path);
+    var scan: usize = 0;
+    const head_end = while (true) {
+        const buf = self.read_buf.items;
+        const end = if (std.mem.indexOfPos(u8, buf, scan, "\r\n\r\n")) |i| i + 4 else null;
+        const head = buf[0 .. end orelse buf.len];
+        var i = scan;
+        while (i < head.len) : (i += 1) {
+            if (head[i] == '\n' and (i == 0 or head[i - 1] != '\r')) return error.InvalidRequest;
+            if (head[i] == '\r' and i + 1 < head.len and head[i + 1] != '\n') return error.InvalidRequest;
+        }
+        const first_line_end = std.mem.indexOf(u8, head, "\r\n") orelse
+            (head.len - @intFromBool(std.mem.endsWith(u8, head, "\r")));
+        if (first_line_end > self.max_request_line_size) return error.RequestLineTooLong;
+        if (end) |n| {
+            if (n > self.max_header_size) return error.HeadersTooLarge;
+            break n;
+        }
+        if (buf.len >= self.max_header_size) return error.HeadersTooLarge;
 
-    var it = std.http.HeaderIterator.init(buf[0..len]);
-    var header_map: lib.HeaderMap = .empty;
+        scan = buf.len -| 3;
+        const read_size = @min(4096, self.max_header_size - buf.len);
+        try self.read_buf.ensureUnusedCapacity(self.allocator, read_size);
+        const n = try self.stream.read(self.read_buf.unusedCapacitySlice()[0..read_size]);
+        if (n == 0) {
+            if (buf.len != 0) return error.IncompleteRequest;
+            self.state.reading = .Closed;
+            return null;
+        }
+        self.read_buf.items.len += n;
+    };
 
-    while (it.next()) |h| {
-        try header_map.put(alloc, h.name, h.value);
+    var request = try proto.Request.parseHead(alloc, self.read_buf.items[0..head_end], self.max_headers);
+    self.state.version = request.version;
+    self.read_pos = head_end;
+
+    if ((request.content_length orelse 0) > 0 or request.headers.contains("Transfer-Encoding")) {
+        // Do not reuse the connection until request body framing is handled.
+        const available = self.read_buf.items.len - head_end;
+        const body_len: usize = @intCast(@min(request.content_length orelse available, available));
+        request.body = try alloc.dupe(u8, self.read_buf.items[head_end..][0..body_len]);
+        request.connection = .Close;
+        self.read_pos = self.read_buf.items.len;
     }
-
-    const connection_str = header_map.get("Connection") orelse "keep-alive";
-    const connection = lib.Connection.parse(connection_str);
-
-    const request = try proto.Request.fromBuffer(
-        alloc,
-        method,
-        uri,
-        connection,
-        header_map,
-        buf[it.index..len],
-    );
 
     self.state.reading = .KeepAlive;
     return request;
@@ -90,7 +116,8 @@ pub fn write(self: *Connection, alloc: std.mem.Allocator, response: proto.Respon
     var response_buf = std.ArrayList(u8).init(alloc);
     defer response_buf.deinit();
 
-    try response_buf.writer().print("HTTP/1.1 {d} {s}\r\n", .{
+    try response_buf.writer().print("{s} {d} {s}\r\n", .{
+        self.state.version.string(),
         @intFromEnum(response.status),
         response.status.string(),
     });
