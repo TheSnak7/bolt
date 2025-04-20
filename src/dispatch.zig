@@ -35,8 +35,10 @@ pub const DispatchServer = struct {
                 const status: lib.StatusCode = switch (err) {
                     error.InvalidRequest, error.IncompleteRequest => .BadRequest,
                     error.RequestLineTooLong => .UriTooLong,
+                    error.BodyTooLarge => .PayloadTooLarge,
                     error.HeadersTooLarge, error.TooManyHeaders => .RequestHeaderFieldsTooLarge,
-                    error.UnsupportedMethod => .NotImplemented,
+                    error.UnsupportedMethod, error.UnsupportedTransferEncoding => .NotImplemented,
+                    error.ExpectationFailed => .ExpectationFailed,
                     error.UnsupportedVersion => .HttpVersionNotSupported,
                     else => return err,
                 };

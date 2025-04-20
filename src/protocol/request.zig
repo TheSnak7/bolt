@@ -12,6 +12,9 @@ pub const Request = struct {
     version: lib.Version = .http11,
     target: []const u8 = "",
     content_length: ?u64 = null,
+    chunked: bool = false,
+    expect_continue: bool = false,
+    trailers: lib.HeaderMap = .empty,
 
     pub fn path(self: *const Request) []const u8 {
         if (self.uri.path.isEmpty() and self.method != .CONNECT) return "/";
@@ -51,22 +54,7 @@ pub const Request = struct {
         while (lines.next()) |line| {
             header_count += 1;
             if (header_count > max_headers) return error.TooManyHeaders;
-            const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidRequest;
-            const name = line[0..colon];
-            const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-            if (!isToken(name)) return error.InvalidRequest;
-            for (value) |c| {
-                if ((c < 32 and c != '\t') or c == 127) return error.InvalidRequest;
-            }
-
-            if (headers.getPtr(name)) |previous| {
-                if (std.ascii.eqlIgnoreCase(name, "Host") or
-                    std.ascii.eqlIgnoreCase(name, "Content-Length")) return error.InvalidRequest;
-                const separator = if (std.ascii.eqlIgnoreCase(name, "Cookie")) "; " else ", ";
-                previous.* = try std.fmt.allocPrint(alloc, "{s}{s}{s}", .{ previous.*, separator, value });
-            } else {
-                try headers.put(alloc, name, value);
-            }
+            try parseHeader(alloc, &headers, line);
         }
 
         if (headers.get("Host")) |host| {
@@ -82,6 +70,28 @@ pub const Request = struct {
                 if (!std.ascii.isDigit(c)) return error.InvalidRequest;
             }
             content_length = std.fmt.parseInt(u64, length, 10) catch return error.InvalidRequest;
+        }
+
+        var chunked = false;
+        if (headers.get("Transfer-Encoding")) |value| {
+            if (version == .http10) return error.InvalidRequest;
+            var codings = std.mem.splitScalar(u8, value, ',');
+            var unsupported = false;
+            while (codings.next()) |part| {
+                const coding = std.mem.trim(u8, part, " \t");
+                if (!isToken(coding) or chunked) return error.InvalidRequest;
+                if (std.ascii.eqlIgnoreCase(coding, "chunked")) chunked = true else unsupported = true;
+            }
+            if (!chunked) return error.InvalidRequest;
+            if (unsupported) return error.UnsupportedTransferEncoding;
+        }
+
+        var expect_continue = false;
+        if (headers.get("Expect")) |value| {
+            if (version == .http11) {
+                if (!std.ascii.eqlIgnoreCase(value, "100-continue")) return error.ExpectationFailed;
+                expect_continue = true;
+            }
         }
 
         var connection: lib.Connection = if (version == .http10) .Close else .KeepAlive;
@@ -108,7 +118,23 @@ pub const Request = struct {
             .version = version,
             .target = target,
             .content_length = content_length,
+            .chunked = chunked,
+            .expect_continue = expect_continue,
         };
+    }
+
+    pub fn addTrailer(self: *Request, line: []const u8) !void {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidRequest;
+        const name = line[0..colon];
+        inline for (.{
+            "Content-Length", "Transfer-Encoding", "Host",             "Connection",       "Trailer",       "TE",
+            "Expect",         "Upgrade",           "Keep-Alive",       "Proxy-Connection", "Authorization", "Proxy-Authorization",
+            "Cookie",         "Content-Type",      "Content-Encoding", "Content-Range",
+        }) |forbidden| {
+            if (std.ascii.eqlIgnoreCase(name, forbidden)) return error.InvalidRequest;
+        }
+        const owned_line = try self.allocator.dupe(u8, line);
+        try parseHeader(self.allocator, &self.trailers, owned_line);
     }
 
     // No transfer of ownership, because of unclear lifetimes.
@@ -127,12 +153,30 @@ pub const Request = struct {
     }
 };
 
-fn isToken(value: []const u8) bool {
+pub fn isToken(value: []const u8) bool {
     if (value.len == 0) return false;
     for (value) |c| {
         if (!std.ascii.isAlphanumeric(c) and std.mem.indexOfScalar(u8, "!#$%&'*+-.^_`|~", c) == null) return false;
     }
     return true;
+}
+
+fn parseHeader(alloc: std.mem.Allocator, headers: *lib.HeaderMap, line: []const u8) !void {
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidRequest;
+    const name = line[0..colon];
+    const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+    if (!isToken(name)) return error.InvalidRequest;
+    for (value) |c| {
+        if ((c < 32 and c != '\t') or c == 127) return error.InvalidRequest;
+    }
+    if (headers.getPtr(name)) |previous| {
+        if (std.ascii.eqlIgnoreCase(name, "Host") or
+            std.ascii.eqlIgnoreCase(name, "Content-Length")) return error.InvalidRequest;
+        const separator = if (std.ascii.eqlIgnoreCase(name, "Cookie")) "; " else ", ";
+        previous.* = try std.fmt.allocPrint(alloc, "{s}{s}{s}", .{ previous.*, separator, value });
+    } else {
+        try headers.put(alloc, name, value);
+    }
 }
 
 fn parseTarget(alloc: std.mem.Allocator, method: lib.Method, target: []const u8) !std.Uri {

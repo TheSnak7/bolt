@@ -12,6 +12,7 @@ const Context = struct {
     h1_max_headers: usize,
     max_header_size: usize,
     max_request_line_size: usize,
+    max_body_size: usize,
 };
 
 ctx: Context,
@@ -21,6 +22,7 @@ const Options = struct {
     h1_max_headers: usize = 100,
     max_header_size: usize = 16 * 1024,
     max_request_line_size: usize = 8192,
+    max_body_size: usize = 1024 * 1024,
 };
 
 pub fn init(options: Options) !Self {
@@ -31,6 +33,7 @@ pub fn init(options: Options) !Self {
             .h1_max_headers = options.h1_max_headers,
             .max_header_size = options.max_header_size,
             .max_request_line_size = options.max_request_line_size,
+            .max_body_size = options.max_body_size,
         },
     };
 }
@@ -57,5 +60,6 @@ pub fn makeDispatcher(self: Self, allocator: std.mem.Allocator, stream: AnyStrea
     conn.max_headers = self.ctx.h1_max_headers;
     conn.max_header_size = self.ctx.max_header_size;
     conn.max_request_line_size = self.ctx.max_request_line_size;
+    conn.max_body_size = self.ctx.max_body_size;
     return DispatchServer.init(conn, service);
 }
