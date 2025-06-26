@@ -42,27 +42,50 @@ pub const DispatchServer = struct {
                     error.UnsupportedVersion => .HttpVersionNotSupported,
                     else => return err,
                 };
-                var response = try Response.full(alloc, status.string());
-                defer response.deinit();
-                response.status = status;
-                try response.headers.put(alloc, "Connection", "close");
-                try self.connection.write(alloc, response);
+                try self.sendError(alloc, status);
                 break;
             } orelse break;
 
             std.log.info("request received: (method={s}, uri={s})", .{ @tagName(request.method), request.path() });
 
             const service_context = Btx.with(alloc, btx.scheduler);
-            var response = try self.service.call(service_context, request);
+            var response = self.service.call(service_context, request) catch |err| {
+                if (err == error.Canceled) return err;
+                std.log.err("Service failed: {s}", .{@errorName(err)});
+                try self.sendError(alloc, .InternalServerError);
+                break;
+            };
             defer response.deinit();
 
-            const connection = if (self.connection.state.keep_alive) request.connection else .Close;
-            try response.headers.put(response.allocator, "Connection", connection.string());
-            try self.connection.write(alloc, response);
+            if (@intFromEnum(response.status) < 200) {
+                try self.sendError(alloc, .InternalServerError);
+                break;
+            }
+            self.connection.write(alloc, response) catch |err| switch (err) {
+                error.InvalidResponseHeader,
+                error.InvalidContentLength,
+                error.UnsupportedTransferEncoding,
+                error.UnsupportedUpgrade,
+                error.UnsupportedTunnel,
+                => {
+                    std.log.err("Invalid response: {s}", .{@errorName(err)});
+                    try self.sendError(alloc, .InternalServerError);
+                    break;
+                },
+                else => return err,
+            };
 
             std.log.info("response generated (status={})", .{response.status});
 
-            if (connection == .Close) break;
+            if (self.connection.state.writing == .Closed) break;
         }
+    }
+
+    fn sendError(self: *DispatchServer, alloc: std.mem.Allocator, status: lib.StatusCode) !void {
+        var response = try Response.full(alloc, status.string());
+        defer response.deinit();
+        response.status = status;
+        try response.headers.put(alloc, "Connection", "close");
+        try self.connection.write(alloc, response);
     }
 };

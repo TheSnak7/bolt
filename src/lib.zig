@@ -75,8 +75,9 @@ pub const Connection = enum {
     Close,
 
     pub fn parse(str: []const u8) Connection {
-        if (std.ascii.eqlIgnoreCase(str, "close")) {
-            return .Close;
+        var tokens = std.mem.splitScalar(u8, str, ',');
+        while (tokens.next()) |part| {
+            if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, part, " \t"), "close")) return .Close;
         }
 
         return .KeepAlive;
@@ -91,7 +92,12 @@ pub const Connection = enum {
 };
 
 pub const StatusCode = enum(u16) {
+    Continue = 100,
+    SwitchingProtocols = 101,
     OK = 200,
+    NoContent = 204,
+    ResetContent = 205,
+    NotModified = 304,
     BadRequest = 400,
     NotFound = 404,
     PayloadTooLarge = 413,
@@ -104,7 +110,12 @@ pub const StatusCode = enum(u16) {
 
     pub fn string(s: StatusCode) []const u8 {
         return switch (s) {
+            .Continue => "Continue",
+            .SwitchingProtocols => "Switching Protocols",
             .OK => "OK",
+            .NoContent => "No Content",
+            .ResetContent => "Reset Content",
+            .NotModified => "Not Modified",
             .BadRequest => "Bad Request",
             .NotFound => "Not Found",
             .PayloadTooLarge => "Payload Too Large",

@@ -10,6 +10,8 @@ const State = struct {
     reading: Reading = .Init,
     writing: Writing = .Init,
     version: lib.Version = .http11,
+    method: lib.Method = .GET,
+    connection: lib.Connection = .KeepAlive,
 
     const Reading = enum {
         Init,
@@ -32,6 +34,7 @@ max_header_size: usize = 16 * 1024,
 max_request_line_size: usize = 8192,
 max_headers: usize = 100,
 max_body_size: usize = 1024 * 1024,
+date_header: bool = true,
 state: State = .{},
 closed: bool = false,
 
@@ -52,6 +55,7 @@ pub fn deinit(self: *Connection) void {
 pub fn read(self: *Connection, alloc: std.mem.Allocator) !?proto.Request {
     if (self.closed or self.state.reading == .Closed) return null;
     self.state.reading = .Init;
+    self.state.method = .GET;
     errdefer self.state.reading = .Closed;
 
     if (self.read_pos > 0) {
@@ -94,6 +98,8 @@ pub fn read(self: *Connection, alloc: std.mem.Allocator) !?proto.Request {
 
     var request = try proto.Request.parseHead(alloc, self.read_buf.items[0..head_end], self.max_headers);
     self.state.version = request.version;
+    self.state.method = request.method;
+    self.state.connection = request.connection;
     self.read_pos = head_end;
 
     const length = request.content_length orelse 0;
@@ -195,8 +201,46 @@ fn readChunked(self: *Connection, alloc: std.mem.Allocator, request: *proto.Requ
 
 pub fn write(self: *Connection, alloc: std.mem.Allocator, response: proto.Response) !void {
     if (self.closed or self.state.writing == .Closed) return error.ConnectionClosed;
-    self.state.writing = .Init;
-    errdefer self.state.writing = .Closed;
+
+    const status = @intFromEnum(response.status);
+    if (response.status == .SwitchingProtocols) return error.UnsupportedUpgrade;
+    if (self.state.method == .CONNECT and status >= 200 and status < 300) return error.UnsupportedTunnel;
+    const informational = status < 200;
+    const no_framing = informational or response.status == .NoContent;
+    const empty_content = response.status == .ResetContent;
+    const no_body = no_framing or empty_content or response.status == .NotModified or self.state.method == .HEAD;
+    var content_length: ?u64 = null;
+    var requested_chunked = response.chunked;
+    var close = !self.state.keep_alive or self.state.connection == .Close or self.state.reading == .Closed;
+
+    var header_it = response.headers.iterator();
+    while (header_it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        try proto.Response.validateHeader(name, value);
+        if (std.ascii.eqlIgnoreCase(name, "Content-Length")) {
+            if (value.len == 0) return error.InvalidContentLength;
+            for (value) |c| {
+                if (!std.ascii.isDigit(c)) return error.InvalidContentLength;
+            }
+            content_length = std.fmt.parseInt(u64, value, 10) catch return error.InvalidContentLength;
+        } else if (std.ascii.eqlIgnoreCase(name, "Transfer-Encoding")) {
+            if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, value, " \t"), "chunked")) return error.UnsupportedTransferEncoding;
+            requested_chunked = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "Connection")) {
+            var tokens = std.mem.splitScalar(u8, value, ',');
+            while (tokens.next()) |part| {
+                const token = std.mem.trim(u8, part, " \t");
+                if (token.len != 0 and !proto.request.isToken(token)) return error.InvalidResponseHeader;
+            }
+            close = close or lib.Connection.parse(value) == .Close;
+        }
+    }
+    if (content_length != null and response.headers.contains("Transfer-Encoding")) return error.InvalidContentLength;
+    if (content_length) |length| {
+        if (!no_body and !response.chunked and length != response.body.len) return error.InvalidContentLength;
+    }
+    const chunked = requested_chunked and self.state.version == .http11 and !no_framing and !empty_content;
 
     var response_buf = std.ArrayList(u8).init(alloc);
     defer response_buf.deinit();
@@ -207,14 +251,56 @@ pub fn write(self: *Connection, alloc: std.mem.Allocator, response: proto.Respon
         response.status.string(),
     });
 
-    var header_it = response.headers.iterator();
+    header_it = response.headers.iterator();
     while (header_it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "Content-Length") or
+            std.ascii.eqlIgnoreCase(entry.key_ptr.*, "Transfer-Encoding") or
+            std.ascii.eqlIgnoreCase(entry.key_ptr.*, "Connection")) continue;
         try response_buf.writer().print("{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
     }
 
+    if (self.date_header and !response.headers.contains("Date")) {
+        var date_buf: [29]u8 = undefined;
+        try response_buf.writer().print("Date: {s}\r\n", .{try proto.Response.formatDate(&date_buf, std.time.timestamp())});
+    }
+    if (chunked) {
+        try response_buf.appendSlice("Transfer-Encoding: chunked\r\n");
+    } else if (!no_framing) {
+        const length: ?u64 = if (empty_content) 0 else if (self.state.method == .HEAD or response.status == .NotModified)
+            content_length orelse (if (response.status == .NotModified) @as(?u64, null) else response.body.len)
+        else
+            response.body.len;
+        if (length) |n| try response_buf.writer().print("Content-Length: {d}\r\n", .{n});
+    }
+    try response_buf.writer().print("Connection: {s}", .{if (close) @as([]const u8, "close") else "keep-alive"});
+    if (response.headers.get("Connection")) |value| {
+        var tokens = std.mem.splitScalar(u8, value, ',');
+        while (tokens.next()) |part| {
+            const token = std.mem.trim(u8, part, " \t");
+            if (token.len != 0 and !std.ascii.eqlIgnoreCase(token, "close") and
+                !std.ascii.eqlIgnoreCase(token, "keep-alive")) try response_buf.writer().print(", {s}", .{token});
+        }
+    }
     try response_buf.appendSlice("\r\n");
-    try response_buf.appendSlice(response.body);
+
+    try response_buf.appendSlice("\r\n");
+    self.state.writing = .Init;
+    errdefer self.state.writing = .Closed;
     try self.stream.writeAll(response_buf.items);
 
-    self.state.writing = .KeepAlive;
+    if (!no_body) {
+        if (chunked) {
+            if (response.body.len != 0) {
+                var size_buf: [32]u8 = undefined;
+                try self.stream.writeAll(try std.fmt.bufPrint(&size_buf, "{x}\r\n", .{response.body.len}));
+                try self.stream.writeAll(response.body);
+                try self.stream.writeAll("\r\n");
+            }
+            try self.stream.writeAll("0\r\n\r\n");
+        } else {
+            try self.stream.writeAll(response.body);
+        }
+    }
+
+    self.state.writing = if (close and !informational) .Closed else .KeepAlive;
 }
