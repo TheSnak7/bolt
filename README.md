@@ -82,3 +82,15 @@ Available examples:
 - `hello_world` - A basic HTTP server that responds with "Hello World!"
 
 For more examples, check out the [examples/](examples/) directory.
+
+HTTP/1 connections allow up to 1000 requests by default. Set `h1_max_requests`
+to `0` to remove that limit, or `h1_keep_alive` to `false` to close after each
+response. A request or response asking for `Connection: close` always wins.
+
+`Http1.init` also accepts `keep_alive_timeout` (5 seconds), `read_timeout`
+(30 seconds for the whole request), `write_timeout` (30 seconds for the whole
+response), and `shutdown_timeout` (1 second). Values are in nanoseconds; `null`
+disables a read/write timeout. Idle connections close silently, while an
+unfinished request gets a 408. Closing sends FIN and drains incoming bytes
+until EOF or the shutdown timeout. Custom streams can implement the optional
+timeout and shutdown hooks in `AnyStream.VTable`.

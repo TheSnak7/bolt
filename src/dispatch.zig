@@ -34,6 +34,7 @@ pub const DispatchServer = struct {
             const request = self.connection.read(alloc) catch |err| {
                 const status: lib.StatusCode = switch (err) {
                     error.InvalidRequest, error.IncompleteRequest => .BadRequest,
+                    error.RequestTimeout => .RequestTimeout,
                     error.RequestLineTooLong => .UriTooLong,
                     error.BodyTooLarge => .PayloadTooLarge,
                     error.HeadersTooLarge, error.TooManyHeaders => .RequestHeaderFieldsTooLarge,
@@ -79,6 +80,11 @@ pub const DispatchServer = struct {
 
             if (self.connection.state.writing == .Closed) break;
         }
+
+        self.connection.shutdown() catch |err| switch (err) {
+            error.ConnectionResetByPeer, error.BrokenPipe, error.SocketNotConnected => {},
+            else => return err,
+        };
     }
 
     fn sendError(self: *DispatchServer, alloc: std.mem.Allocator, status: lib.StatusCode) !void {

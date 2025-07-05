@@ -1,11 +1,12 @@
 const std = @import("std");
-const aio = @import("aio");
+const builtin = @import("builtin");
 const coro = @import("coro");
 const TcpStream = @import("stream.zig").TcpStream;
 
 const Self = @This();
 
 listener: std.posix.socket_t,
+closed: bool = false,
 
 pub fn bind(address: *const std.net.Address) !Self {
     var listener: std.posix.socket_t = undefined;
@@ -15,7 +16,7 @@ pub fn bind(address: *const std.net.Address) !Self {
         .protocol = std.posix.IPPROTO.TCP,
         .out_socket = &listener,
     });
-    errdefer coro.io.single(.close_socket, .{ .socket = listener }) catch {};
+    errdefer (std.net.Stream{ .handle = listener }).close();
 
     std.posix.setsockopt(listener, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1))) catch |err| {
         std.log.err("Could not set socket options: {s}", .{@errorName(err)});
@@ -36,6 +37,7 @@ pub fn bind(address: *const std.net.Address) !Self {
 
     std.posix.listen(listener, 128) catch |err| {
         std.log.err("Failed to listen: {s}", .{@errorName(err)});
+        return err;
     };
     std.log.info("Listening on {}", .{address});
 
@@ -45,13 +47,20 @@ pub fn bind(address: *const std.net.Address) !Self {
 }
 
 pub fn accept(self: *Self) !TcpStream {
+    if (self.closed) return error.ListenerClosed;
     var client_sock: std.posix.socket_t = undefined;
     try coro.io.single(.accept, .{ .socket = self.listener, .out_socket = &client_sock });
+    errdefer (std.net.Stream{ .handle = client_sock }).close();
+    if (builtin.os.tag == .windows) {
+        // AcceptEx does not inherit the listener's socket context automatically.
+        try std.posix.setsockopt(client_sock, std.posix.SOL.SOCKET, std.os.windows.ws2_32.SO.UPDATE_ACCEPT_CONTEXT, std.mem.asBytes(&self.listener));
+    }
     return TcpStream.init(client_sock);
 }
 
 pub fn deinit(self: *Self) void {
-    coro.io.single(.close_socket, .{ .socket = self.listener }) catch {
-        std.log.err("Failed to close socket", .{});
-    };
+    if (self.closed) return;
+    self.closed = true;
+    // The accept task must be canceled before destroying its listener.
+    (std.net.Stream{ .handle = self.listener }).close();
 }

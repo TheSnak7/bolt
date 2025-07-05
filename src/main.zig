@@ -23,7 +23,8 @@ pub fn main(run: anytype) !void {
 
     const context = BoltContext.with(gpa.allocator(), &scheduler);
 
-    _ = try scheduler.spawn(run, .{context}, .{});
+    const task = try scheduler.spawn(run, .{context}, .{});
 
     try scheduler.run(.wait);
+    try task.complete(.wait);
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const lib = @import("lib.zig");
 const proto = @import("protocol.zig");
 const AnyStream = @import("stream.zig").AnyStream;
+const remainingTime = @import("stream.zig").remaining;
 
 const Connection = @This();
 
@@ -33,10 +34,19 @@ read_pos: usize = 0,
 max_header_size: usize = 16 * 1024,
 max_request_line_size: usize = 8192,
 max_headers: usize = 100,
+max_requests: usize = 1000,
 max_body_size: usize = 1024 * 1024,
 date_header: bool = true,
+keep_alive_timeout: ?u64 = 5 * std.time.ns_per_s,
+read_timeout: ?u64 = 30 * std.time.ns_per_s,
+write_timeout: ?u64 = 30 * std.time.ns_per_s,
+shutdown_timeout: u64 = std.time.ns_per_s,
+read_timer: std.time.Timer = undefined,
+write_timer: std.time.Timer = undefined,
+requests: usize = 0,
 state: State = .{},
 closed: bool = false,
+shutting_down: bool = false,
 
 // The stream storage must outlive the connection. deinit closes the stream.
 pub fn init(allocator: std.mem.Allocator, stream: AnyStream) !Connection {
@@ -52,11 +62,22 @@ pub fn deinit(self: *Connection) void {
     self.stream.deinit();
 }
 
+pub fn shutdown(self: *Connection) !void {
+    if (self.closed or self.shutting_down) return;
+    self.shutting_down = true;
+    self.state.reading = .Closed;
+    self.state.writing = .Closed;
+    try self.stream.shutdown(self.shutdown_timeout);
+}
+
 pub fn read(self: *Connection, alloc: std.mem.Allocator) !?proto.Request {
-    if (self.closed or self.state.reading == .Closed) return null;
+    if (self.closed or self.state.reading == .Closed or self.state.writing == .Closed) return null;
     self.state.reading = .Init;
+    self.state.version = .http11;
     self.state.method = .GET;
+    self.state.connection = .KeepAlive;
     errdefer self.state.reading = .Closed;
+    self.read_timer = try std.time.Timer.start();
 
     if (self.read_pos > 0) {
         const remaining = self.read_buf.items[self.read_pos..];
@@ -87,12 +108,21 @@ pub fn read(self: *Connection, alloc: std.mem.Allocator) !?proto.Request {
         scan = buf.len -| 3;
         const read_size = @min(4096, self.max_header_size - buf.len);
         try self.read_buf.ensureUnusedCapacity(self.allocator, read_size);
-        const n = try self.stream.read(self.read_buf.unusedCapacitySlice()[0..read_size]);
+        const idle = self.requests > 0 and buf.len == 0;
+        const n = self.readHead(self.read_buf.unusedCapacitySlice()[0..read_size], idle) catch |err| {
+            if (err == error.Timeout) {
+                if (buf.len != 0) return error.RequestTimeout;
+                self.state.reading = .Closed;
+                return null;
+            }
+            return err;
+        };
         if (n == 0) {
             if (buf.len != 0) return error.IncompleteRequest;
             self.state.reading = .Closed;
             return null;
         }
+        if (idle) self.read_timer.reset();
         self.read_buf.items.len += n;
     };
 
@@ -105,7 +135,7 @@ pub fn read(self: *Connection, alloc: std.mem.Allocator) !?proto.Request {
     const length = request.content_length orelse 0;
     if (length > self.max_body_size) return error.BodyTooLarge;
     if (request.expect_continue and (length > 0 or request.chunked)) {
-        try self.stream.writeAll("HTTP/1.1 100 Continue\r\n\r\n");
+        try self.stream.writeAllWithTimeout("HTTP/1.1 100 Continue\r\n\r\n", self.write_timeout);
     }
     if (request.chunked) {
         request.body = try self.readChunked(alloc, &request);
@@ -116,7 +146,14 @@ pub fn read(self: *Connection, alloc: std.mem.Allocator) !?proto.Request {
     }
 
     self.state.reading = .KeepAlive;
+    self.requests +|= 1;
+    if (self.max_requests != 0 and self.requests >= self.max_requests) self.state.keep_alive = false;
     return request;
+}
+
+fn readHead(self: *Connection, buffer: []u8, idle: bool) !usize {
+    const idle_timout = if (idle) self.keep_alive_timeout else try remainingTime(&self.read_timer, self.read_timeout);
+    return self.stream.readWithTimeout(buffer, idle_timout);
 }
 
 fn fill(self: *Connection) !bool {
@@ -125,9 +162,16 @@ fn fill(self: *Connection) !bool {
     self.read_buf.items.len = remaining.len;
     self.read_pos = 0;
     try self.read_buf.ensureUnusedCapacity(self.allocator, 4096);
-    const n = try self.stream.read(self.read_buf.unusedCapacitySlice()[0..4096]);
+    const n = self.readBody(self.read_buf.unusedCapacitySlice()[0..4096]) catch |err| switch (err) {
+        error.Timeout => return error.RequestTimeout,
+        else => return err,
+    };
     self.read_buf.items.len += n;
     return n != 0;
+}
+
+fn readBody(self: *Connection, buffer: []u8) !usize {
+    return self.stream.readWithTimeout(buffer, try remainingTime(&self.read_timer, self.read_timeout));
 }
 
 fn readBytes(self: *Connection, buffer: []u8) !void {
@@ -286,21 +330,26 @@ pub fn write(self: *Connection, alloc: std.mem.Allocator, response: proto.Respon
     try response_buf.appendSlice("\r\n");
     self.state.writing = .Init;
     errdefer self.state.writing = .Closed;
-    try self.stream.writeAll(response_buf.items);
+    self.write_timer = try std.time.Timer.start();
+    try self.writeBytes(response_buf.items);
 
     if (!no_body) {
         if (chunked) {
             if (response.body.len != 0) {
                 var size_buf: [32]u8 = undefined;
-                try self.stream.writeAll(try std.fmt.bufPrint(&size_buf, "{x}\r\n", .{response.body.len}));
-                try self.stream.writeAll(response.body);
-                try self.stream.writeAll("\r\n");
+                try self.writeBytes(try std.fmt.bufPrint(&size_buf, "{x}\r\n", .{response.body.len}));
+                try self.writeBytes(response.body);
+                try self.writeBytes("\r\n");
             }
-            try self.stream.writeAll("0\r\n\r\n");
+            try self.writeBytes("0\r\n\r\n");
         } else {
-            try self.stream.writeAll(response.body);
+            try self.writeBytes(response.body);
         }
     }
 
     self.state.writing = if (close and !informational) .Closed else .KeepAlive;
+}
+
+fn writeBytes(self: *Connection, buffer: []const u8) !void {
+    try self.stream.writeAllWithTimeout(buffer, try remainingTime(&self.write_timer, self.write_timeout));
 }
