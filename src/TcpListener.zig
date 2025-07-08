@@ -58,6 +58,14 @@ pub fn accept(self: *Self) !TcpStream {
     return TcpStream.init(client_sock);
 }
 
+pub fn localAddress(self: *Self) !std.net.Address {
+    if (self.closed) return error.ListenerClosed;
+    var result: std.net.Address = undefined;
+    var len: std.posix.socklen_t = @sizeOf(std.net.Address);
+    try std.posix.getsockname(self.listener, &result.any, &len);
+    return result;
+}
+
 pub fn deinit(self: *Self) void {
     if (self.closed) return;
     self.closed = true;

@@ -4,9 +4,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const zig_aio = b.dependency("zig-aio", .{});
+    const zig_aio = b.dependency("zig-aio", .{ .target = target, .optimize = optimize });
 
-    const bolt_mod = b.createModule(.{
+    const bolt_mod = b.addModule("bolt", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -16,42 +16,24 @@ pub fn build(b: *std.Build) void {
     bolt_mod.addImport("coro", zig_aio.module("coro"));
 
     // Create both build and run steps for examples
-    const example_step = b.step("example", "Build an example");
+    const example_step = b.step("example", "Build all examples");
     const example_run_step = b.step("example-run", "Run an example. Usage: zig build example-run -- [name]");
 
     var examples = std.StringHashMap(*std.Build.Step.Compile).init(b.allocator);
     defer examples.deinit();
 
-    {
-        const hello_world = b.addExecutable(.{
-            .name = "hello_world",
-            .root_source_file = b.path("examples/hello_world.zig"),
+    inline for (.{ .hello_world, .echo, .graceful }) |name| {
+        const example = b.addExecutable(.{
+            .name = @tagName(name),
+            .root_source_file = b.path("examples/" ++ @tagName(name) ++ ".zig"),
             .target = target,
             .optimize = optimize,
         });
-        hello_world.root_module.addImport("bolt", bolt_mod);
-        hello_world.root_module.addImport("aio", zig_aio.module("aio"));
-        hello_world.root_module.addImport("coro", zig_aio.module("coro"));
-        examples.put("hello_world", hello_world) catch @panic("OOM");
-
-        // Add all examples to the build step
-        example_step.dependOn(&hello_world.step);
-    }
-
-    {
-        const echo = b.addExecutable(.{
-            .name = "echo",
-            .root_source_file = b.path("examples/echo.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        echo.root_module.addImport("bolt", bolt_mod);
-        echo.root_module.addImport("aio", zig_aio.module("aio"));
-        echo.root_module.addImport("coro", zig_aio.module("coro"));
-        examples.put("echo", echo) catch @panic("OOM");
-
-        // Add all examples to the build step
-        example_step.dependOn(&echo.step);
+        example.root_module.addImport("bolt", bolt_mod);
+        examples.put(@tagName(name), example) catch @panic("OOM");
+        const install = b.addInstallArtifact(example, .{});
+        b.getInstallStep().dependOn(&install.step);
+        example_step.dependOn(&install.step);
     }
 
     // Handle running examples if args are provided
@@ -80,6 +62,9 @@ pub fn build(b: *std.Build) void {
             }
             std.process.exit(1);
         }
+    } else {
+        const missing_example = b.addFail("Usage: zig build example-run -- [hello_world|echo|graceful]");
+        example_run_step.dependOn(&missing_example.step);
     }
 
     const exe_unit_tests = b.addTest(.{

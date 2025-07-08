@@ -29,18 +29,10 @@ fn echoMain(btx: Btx) !void {
 
     const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 3000);
 
-    var listener = try bolt.TcpListener.bind(&address);
-    defer listener.deinit();
-
+    var server = try bolt.Server.bind(&address, .{});
+    defer server.deinit();
     const echo_service = try bolt.service.createFnService(echo);
-    const http = try bolt.Http1.init(.{});
-
-    while (true) {
-        const stream = try listener.accept();
-        errdefer stream.deinit();
-
-        _ = try btx.scheduler.spawn(bolt.Http1.call, .{ http, btx, stream, echo_service }, .{ .detached = true });
-    }
+    try server.serve(btx, echo_service);
 }
 
 pub fn main() !void {

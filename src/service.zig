@@ -4,7 +4,7 @@ const Request = @import("protocol.zig").Request;
 
 const std = @import("std");
 
-// TODO: study coro and aio api better -> are Tasks applicable?
+// Services are borrowed. The caller owns their state and calls deinit if needed.
 pub const Service = struct {
     pub const VTable = struct {
         call: *const fn (ptr: *anyopaque, ctx: BoltContext, req: Request) anyerror!Response,
@@ -28,9 +28,6 @@ pub fn ServiceFn(func: anytype) type {
         const Self = @This();
 
         pub fn call(ptr: *anyopaque, ctx: BoltContext, req: Request) anyerror!Response {
-            //TODO: Arenas for memory management
-            // An arena can be used per request and cleared when the response is written
-            // ptr for future state
             _ = ptr;
             return try func(ctx, req);
         }
@@ -54,12 +51,32 @@ pub fn ServiceFn(func: anytype) type {
 }
 
 pub fn createService(allocator: std.mem.Allocator, serv: anytype) !Service {
-    _ = allocator; // Unused for now need for stateful services
+    _ = allocator;
     const info = @typeInfo(@TypeOf(serv));
 
     return switch (info) {
         .@"fn" => createFnService(serv),
-        else => @panic("todo"),
+        .pointer => |pointer| blk: {
+            if (pointer.size != .one or pointer.is_const or @typeInfo(pointer.child) != .@"struct") {
+                @compileError("Expected a function or a mutable pointer to a service struct");
+            }
+            const Adapter = struct {
+                fn call(ptr: *anyopaque, ctx: BoltContext, req: Request) anyerror!Response {
+                    const self: @TypeOf(serv) = @ptrCast(@alignCast(ptr));
+                    return self.call(ctx, req);
+                }
+
+                fn deinit(ptr: *anyopaque) void {
+                    const self: @TypeOf(serv) = @ptrCast(@alignCast(ptr));
+                    if (@hasDecl(pointer.child, "deinit")) self.deinit();
+                }
+            };
+            break :blk .{
+                .ptr = serv,
+                .vtable = &.{ .call = Adapter.call, .deinit = Adapter.deinit },
+            };
+        },
+        else => @compileError("Expected a function or a mutable pointer to a service struct"),
     };
 }
 

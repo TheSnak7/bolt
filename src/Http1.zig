@@ -23,7 +23,7 @@ const Context = struct {
 
 ctx: Context,
 
-const Options = struct {
+pub const Options = struct {
     h1_keep_alive: bool = true,
     h1_max_headers: usize = 100,
     h1_max_requests: usize = 1000,
