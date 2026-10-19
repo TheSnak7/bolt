@@ -12,6 +12,8 @@ which is kinda crucial for my Pegasus project.
 
 ## Usage
 
+Requires Zig 0.14 to build and run. Not verified with later Zig versions.
+
 Add Bolt as a dependency in your `build.zig.zon` through zig fetch:
 
 ```bash
